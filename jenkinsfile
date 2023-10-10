@@ -1,34 +1,40 @@
+def COLOR_MAP = [
+    'SUCCESS': 'good',
+    'FAILURE': 'danger',
+]
 pipeline {
-    
     agent any
-    
-      stages {
-        stage ('Git-Checkout') {
-            
-            steps {
-                
-                git branch: 'main', 
-                url: 'https://github.com/VardhanLearn/Jenkins-Maven-Docker.git'
-                
+        environment {
+          AWS_ACCOUNT_ID="377831436250"
+          AWS_DEFAULT_REGION="ap-south-1" 
+          IMAGE_REPO_NAME="docker-ecr"
+          IMAGE_TAG="latest"
+          REPOSITORY_URI = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${IMAGE_REPO_NAME}"
+        }
+ 
+        stages {
+          stage('Logging into AWS ECR') {
+           steps {
+              script {
+                sh "aws ecr get-login-password --region ${AWS_DEFAULT_REGION} | docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com"
+               }
+ 
+             }
             }
-        }  
-        
-         stage ('Maven-Build') {
+ 
+            stage('Git-Checkout') {
+             steps {
+               checkout scmGit(branches: [[name: '*/main']], extensions: [], userRemoteConfigs: [[url: 'https://github.com/VardhanLearn/Git-Maven-Docker-S3.git']]) 
+            }
+        }
+        stage ('Maven-Build') {
              
              steps {
                 
                 sh 'mvn install -DskipTests'   
              }
-             
-             post {
-	           success {
-	              echo 'Now Archiving it...'
-	              archiveArtifacts artifacts: '*/**.jar'
-	           }
-	        }
         }
-	        
-         stage('UNIT TEST') {
+        stage('UNIT TEST') {
             steps{
                 sh 'mvn test'
             }
@@ -38,23 +44,22 @@ pipeline {
                 sh 'mvn checkstyle:checkstyle'
             }
        }
-        stage ('Docker Build & Push') {
-            
-            steps {
-                
-                script {
-                    
-                    withDockerRegistry(credentialsId: 'vardhan8928-docker') {
-                        
-                        sh "docker build -t vardhan8928/docker-java-web-app:tag124 ."
-                        sh "docker push vardhan8928/docker-java-web-app:tag124"
-                    }
-                    
+        
+         stage('Building image') {
+             steps{
+              script {
+                dockerImage = docker.build "${IMAGE_REPO_NAME}:${IMAGE_TAG}"
                 }
-                
+           }
+        }
+        stage('Pushing to ECR') {
+            steps{ 
+                script {
+                    sh "docker tag ${IMAGE_REPO_NAME}:${IMAGE_TAG} ${REPOSITORY_URI}:$IMAGE_TAG"
+                    sh "docker push ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${IMAGE_REPO_NAME}:${IMAGE_TAG}"
+                }
             }
-            
-            post {
+             post {
                 
                 success {
                     
@@ -65,34 +70,26 @@ pipeline {
                 
             }
         }
-         stage ('Upload Artifact On S3') {
-            
-            steps {
-                
-                script {
-                    
-                    s3Upload consoleLogLevel: 'INFO', dontSetBuildResultOnFailure: false, 
-                    dontWaitForConcurrentBuildCompletion: false, 
-                    entries: [[bucket: 'jenkins-book', 
-                    excludedFile: '', 
-                    flatten: false, 
-                    gzipFiles: false, 
-                    keepForever: false, 
-                    managedArtifacts: false, 
-                    noUploadOnFailure: true, 
-                    selectedRegion: 'ap-south-1', 
-                    showDirectlyInBrowser: false, 
-                    sourceFile: '*/**.jar', 
-                    storageClass: 'STANDARD', 
-                    uploadFromSlave: false, 
-                    useServerSideEncryption: false]], 
-                    pluginFailureResultConstraint: 'FAILURE', 
-                    profileName: 'jenkins-book', 
-                    userMetadata: []
-                    
-                }    
-            }        
+        stage ('Command'){
+	       steps{
+		         sh 'sleep 8s'
+            }
+            post{
+              always {
+            	echo 'Slack Notifications.'
+	            slackSend channel: '#jenkinsprojects',
+	            color: COLOR_MAP [currentBuild.currentResult],		
+	            message: "*${currentBuild.currentResult}:* Job ${env.JOB_NAME} build ${env.BUILD_NUMBER} \n More info at: ${env.BUILD_URL}"
+                }
+            }
         }
-        
+    }
+    post {
+        always{
+            
+           emailext attachLog: true, body: "${currentBuild.result}: ${BUILD_URL}", compressLog: true, replyTo: 'kandregulavardhan99@gmail.com',
+           subject: "Build Notification: ${JOB_NAME}-Build# ${BUILD_NUMBER} ${currentBuild.result}", to: 'kandregulavardhan99@gmail.com'    
+
+        }
     }
 }
